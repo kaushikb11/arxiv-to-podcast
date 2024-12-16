@@ -6,8 +6,16 @@ from dataclasses import dataclass, field
 from typing import List, Optional
 import fitz
 from PyPDF2 import PdfReader
+from operator import itemgetter
 import re
 from langchain_core.messages import AIMessage
+from langchain_community.document_loaders import TextLoader
+from langchain_core.output_parsers import StrOutputParser
+from langchain_openai import AzureOpenAIEmbeddings
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_community.vectorstores import Chroma
+
+from src.templates import discuss_prompt_template
 
 class ArxivDownloadError(Exception):
     pass
@@ -212,3 +220,31 @@ def get_paper_head(pdf_path: str) -> str:
                 extracted_text.append(text)
 
     return "\n".join(extracted_text)
+
+
+def initialize_discussion_chain(txt_file, llm):
+    # Load, chunk and index the contents of the blog.
+    loader = TextLoader(txt_file, encoding='UTF-8')
+    docs = loader.load()
+
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+    splits = text_splitter.split_documents(docs)
+    vectorstore = Chroma.from_documents(documents=splits, embedding=AzureOpenAIEmbeddings())
+
+    # Retrieve and generate using the relevant snippets of the blog.
+    retriever = vectorstore.as_retriever()
+
+    def format_docs(docs):
+        return "\n\n".join(doc.page_content for doc in docs)
+
+    discuss_rag_chain = (
+        {
+            "additional_context": itemgetter("section_plan") | retriever | format_docs,
+            "section_plan": itemgetter("section_plan"),
+            "previous_dialogue": itemgetter("previous_dialogue"),
+        }
+        | discuss_prompt_template
+        | llm
+        | StrOutputParser()
+    )
+    return discuss_rag_chain

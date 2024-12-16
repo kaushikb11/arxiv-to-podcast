@@ -90,7 +90,7 @@ def enhance_script(state: PodcastState) -> Dict[str, Any]:
     return {}
 
 
-def create_arxiv_to_podcast_pdf(verbose: bool = True):
+def create_arxiv_to_podcast_agent(verbose: bool = True):
     graph = StateGraph(PodcastState)
 
     def add_verbose_node(name, func):

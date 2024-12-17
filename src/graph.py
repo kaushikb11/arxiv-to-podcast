@@ -5,13 +5,16 @@ from typing import Annotated, Any, Dict, List, TypedDict
 from dotenv import load_dotenv
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_openai import AzureChatOpenAI
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 
 from src.templates import enhance_prompt, initial_dialogue_prompt, plan_prompt
 from src.utils.utilities import (
     download_arxiv_pdf,
+    get_discussion_chain,
     get_paper_head,
     initialize_discussion_chain,
+    initialize_vectorstore,
     parse_arxiv_pdf,
     parse_script_plan,
 )
@@ -58,7 +61,7 @@ def generate_script_plan(state: PodcastState) -> Dict[str, Any]:
         [HumanMessage(content=plan_prompt.format(paper=state["paper_content"]))]
     )
     plan = parse_script_plan(response)
-    return {"section_script_plan": plan}
+    return {"section_plan": plan}
 
 
 def generate_initial_dialogue(state: PodcastState) -> Dict[str, Any]:
@@ -70,7 +73,8 @@ def generate_initial_dialogue(state: PodcastState) -> Dict[str, Any]:
 
 
 def process_section(state: PodcastState) -> Dict[str, Any]:
-    discuss_chain = initialize_discussion_chain(state["paper_content"], llm)
+    discuss_chain = initialize_discussion_chain(state["paper_parsed_path"], llm)
+
     current_section = state["section_plan"][0]
     section_script = discuss_chain.invoke(
         {"section_plan": current_section, "previous_dialogue": state["script"]}
@@ -80,14 +84,27 @@ def process_section(state: PodcastState) -> Dict[str, Any]:
 
 
 def should_continue_sections(state: PodcastState) -> Dict[str, Any]:
-    if state["section_plan"]:
-        return "process_section"
+    # if state["section_plan"]:
+    #     return "process_section"
     return "enhance_script"
 
 
 def enhance_script(state: PodcastState) -> Dict[str, Any]:
-    # TODO
-    return {}
+    response = llm.invoke(
+        [HumanMessage(content=enhance_prompt.format(draft_script=state["script"]))]
+    )
+    enhanced_script = response.content
+    paper_dir = os.path.dirname(state["paper_raw_path"])
+    enhanced_script_path = os.path.join(paper_dir, "enhanced_script.txt")
+
+    with open(enhanced_script_path, "w", encoding="utf-8") as f:
+        f.write(enhanced_script)
+
+    return {"enhanced_script": enhanced_script}
+
+
+def generate_podcast(state: PodcastState) -> Dict[str, Any]:
+    pass
 
 
 def create_arxiv_to_podcast_agent(verbose: bool = True):
@@ -96,10 +113,30 @@ def create_arxiv_to_podcast_agent(verbose: bool = True):
     def add_verbose_node(name, func):
         def verbose_wrapper(state):
             if verbose:
-                print(f"Starting {name}...")
+                print("\n" + "=" * 50)
+                print(f"🔄 Executing: {name}")
+
+                # Show relevant state based on node type
+                if name == "process_section":
+                    total_sections = len(state.get("section_plan", []))
+                    remaining = len(state["section_plan"])
+                    completed = total_sections - remaining
+                    print(f"📊 Progress: Section {completed}/{total_sections}")
+                    if state["section_plan"]:
+                        print(f"🎯 Current section: {state['section_plan'][0][:100]}...")
+                elif name == "process_arxiv_paper":
+                    print(f"📄 Processing paper: {state['paper_url']}")
+                    # memory.vectorstore = initialize_vectorstore(state["paper_parsed_path"])
+                elif name == "generate_script_plan":
+                    print("📝 Generating podcast structure...")
+                elif name == "enhance_script":
+                    print("✨ Enhancing final script...")
+
             result = func(state)
+
             if verbose:
-                print(f"Finished {name}")
+                print(f"✅ Completed: {name}")
+                print("=" * 50 + "\n")
             return result
 
         graph.add_node(name, verbose_wrapper)
@@ -112,7 +149,6 @@ def create_arxiv_to_podcast_agent(verbose: bool = True):
 
     graph.add_edge("process_arxiv_paper", "generate_script_plan")
     graph.add_edge("process_arxiv_paper", "generate_initial_dialogue")
-    graph.add_edge("generate_script_plan", END)
     graph.add_edge("generate_initial_dialogue", "process_section")
 
     # Add conditional edge for section processing

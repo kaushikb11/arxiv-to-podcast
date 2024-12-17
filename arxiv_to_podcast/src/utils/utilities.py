@@ -14,7 +14,6 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_openai import AzureOpenAIEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from PyPDF2 import PdfReader
-
 from src.templates import discuss_prompt_template
 
 

@@ -1,0 +1,10 @@
+[
+  {
+    "config_name": "openai_config",
+    "client": "openai",
+    "model": "gpt-4-32k",
+    "temperature": 0.7,
+    "max_tokens": 1000,
+    "api_base": "https://api.openai.com/v1"
+  }
+]

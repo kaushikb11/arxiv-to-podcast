@@ -1,3 +1,4 @@
+import asyncio
 import os
 from operator import add
 from typing import Annotated, Any, Dict, List, TypedDict
@@ -7,8 +8,8 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langchain_openai import AzureChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
-
 from src.templates import enhance_prompt, initial_dialogue_prompt, plan_prompt
+from src.utils.audio import PodcastGenerator
 from src.utils.utilities import (
     download_arxiv_pdf,
     get_discussion_chain,
@@ -37,6 +38,7 @@ class PodcastState(TypedDict):
     section_plan: List[str]
     script: Annotated[str, add]
     enhanced_script: str
+    audio_path: str
 
 
 def process_arxiv_paper(state: PodcastState) -> Dict[str, Any]:
@@ -84,8 +86,8 @@ def process_section(state: PodcastState) -> Dict[str, Any]:
 
 
 def should_continue_sections(state: PodcastState) -> Dict[str, Any]:
-    # if state["section_plan"]:
-    #     return "process_section"
+    if state["section_plan"]:
+        return "enhance_script"
     return "enhance_script"
 
 
@@ -104,7 +106,14 @@ def enhance_script(state: PodcastState) -> Dict[str, Any]:
 
 
 def generate_podcast(state: PodcastState) -> Dict[str, Any]:
-    pass
+    paper_dir = os.path.dirname(state["paper_raw_path"])
+    generator = PodcastGenerator(
+        subscription_key=os.getenv("AZURE_SPEECH_KEY"),
+        region=os.getenv("AZURE_SPEECH_REGION"),
+        base_dir=paper_dir,
+    )
+    audio_path = asyncio.run(generator.generate_podcast(state["enhanced_script"]))
+    return {"audio_path": audio_path}
 
 
 def create_arxiv_to_podcast_agent(verbose: bool = True):
@@ -129,13 +138,15 @@ def create_arxiv_to_podcast_agent(verbose: bool = True):
                     # memory.vectorstore = initialize_vectorstore(state["paper_parsed_path"])
                 elif name == "generate_script_plan":
                     print("📝 Generating podcast structure...")
-                elif name == "enhance_script":
-                    print("✨ Enhancing final script...")
+                elif name == "generate_podcast":
+                    print("🎙️ Generating podcast audio...")
 
             result = func(state)
 
             if verbose:
                 print(f"✅ Completed: {name}")
+                if name == "generate_podcast":
+                    print(f"📁 Audio saved to: {result.get('audio_path')}")
                 print("=" * 50 + "\n")
             return result
 
@@ -146,14 +157,21 @@ def create_arxiv_to_podcast_agent(verbose: bool = True):
     add_verbose_node("generate_initial_dialogue", generate_initial_dialogue)
     add_verbose_node("process_section", process_section)
     add_verbose_node("enhance_script", enhance_script)
+    # add_verbose_node("generate_podcast", generate_podcast)
 
     graph.add_edge("process_arxiv_paper", "generate_script_plan")
     graph.add_edge("process_arxiv_paper", "generate_initial_dialogue")
     graph.add_edge("generate_initial_dialogue", "process_section")
 
     # Add conditional edge for section processing
-    graph.add_conditional_edges("process_section", should_continue_sections)
+    graph.add_conditional_edges(
+        "process_section",
+        should_continue_sections,
+        {"process_section": "process_section", "enhance_script": "enhance_script"},
+    )
     graph.add_edge("enhance_script", END)
+    graph.add_edge("generate_script_plan", END)
+    # graph.add_edge("generate_podcast", END)
 
     graph.set_entry_point("process_arxiv_paper")
 

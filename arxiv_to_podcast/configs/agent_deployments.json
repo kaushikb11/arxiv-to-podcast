@@ -1,0 +1,10 @@
+[
+  {
+    "name": "agent_deployment_1",
+    "module": { "name": "arxiv_to_podcast_agent" },
+    "worker_node_url": "http://localhost:7001",
+    "agent_config": {
+      "llm_config": { "config_name": "openai_config" }
+    }
+  }
+]

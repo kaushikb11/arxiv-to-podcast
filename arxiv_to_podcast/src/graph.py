@@ -1,9 +1,10 @@
 import asyncio
 import os
 from operator import add
-from typing import Annotated, Any, Dict, List, TypedDict
+from typing import Annotated, Any, Dict, List, Optional, TypedDict
 
 from dotenv import load_dotenv
+from langchain_community.vectorstores import Chroma
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_openai import AzureChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
@@ -39,6 +40,7 @@ class PodcastState(TypedDict):
     script: Annotated[str, add]
     enhanced_script: str
     audio_path: str
+    vectorstore: Optional[Chroma]
 
 
 def process_arxiv_paper(state: PodcastState) -> Dict[str, Any]:
@@ -50,11 +52,14 @@ def process_arxiv_paper(state: PodcastState) -> Dict[str, Any]:
     with open(parsed_path, encoding="utf-8") as f:
         paper_content = f.read()
 
+    vectorstore = initialize_vectorstore(parsed_path)
+
     return {
         "paper_id": paper_id,
         "paper_raw_path": pdf_path,
         "paper_parsed_path": parsed_path,
         "paper_content": paper_content,
+        "vectorstore": vectorstore,
     }
 
 
@@ -75,7 +80,7 @@ def generate_initial_dialogue(state: PodcastState) -> Dict[str, Any]:
 
 
 def process_section(state: PodcastState) -> Dict[str, Any]:
-    discuss_chain = initialize_discussion_chain(state["paper_parsed_path"], llm)
+    discuss_chain = get_discussion_chain(state["vectorstore"], llm)
 
     current_section = state["section_plan"][0]
     section_script = discuss_chain.invoke(
@@ -87,7 +92,7 @@ def process_section(state: PodcastState) -> Dict[str, Any]:
 
 def should_continue_sections(state: PodcastState) -> Dict[str, Any]:
     if state["section_plan"]:
-        return "enhance_script"
+        return "process_section"
     return "enhance_script"
 
 

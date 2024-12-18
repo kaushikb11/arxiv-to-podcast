@@ -230,8 +230,11 @@ def initialize_vectorstore(txt_file):
     return Chroma.from_documents(documents=splits, embedding=AzureOpenAIEmbeddings())
 
 
-def get_discussion_chain(vectorstore, llm):
-    retriever = vectorstore.as_retriever()
+def get_discussion_chain(vectorstore: Chroma, llm):
+    """Create discussion chain using existing vectorstore."""
+    retriever = vectorstore.as_retriever(
+        search_type="similarity", search_kwargs={"k": 6}
+    )
 
     def format_docs(docs):
         return "\n\n".join(doc.page_content for doc in docs)

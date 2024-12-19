@@ -1,4 +1,3 @@
-import asyncio
 import datetime
 import os
 import re
@@ -27,81 +26,132 @@ class PodcastGenerator:
     def __init__(
         self, subscription_key: str, region: str, base_dir: str = "./podcasts"
     ):
-        self.speech_config = speechsdk.SpeechConfig(
-            subscription=subscription_key, region=region
-        )
+        self.subscription_key = subscription_key
+        self.region = region
         self.base_dir = base_dir
         os.makedirs(base_dir, exist_ok=True)
 
     def _generate_audio(self, text: str, speaker: str, output_path: str) -> str:
         """Generate audio for a single piece of dialogue."""
+        wav_path = output_path.replace(".mp3", ".wav")
+
+        speech_config = speechsdk.SpeechConfig(
+            subscription=self.subscription_key, region=self.region
+        )
+
         config = SPEAKER_CONFIGS[speaker]
+        speech_config.speech_synthesis_voice_name = config.voice_name
 
-        # Configure voice and style
-        self.speech_config.speech_synthesis_voice_name = config.voice_name
-        ssml_text = f"""
-        <speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis">
-            <voice name="{config.voice_name}">
-                <mstts:express-as style="{config.style}" styledegree="{config.style_degree}" xmlns:mstts="http://www.w3.org/2001/mstts">
-                    {text}
-                </mstts:express-as>
-            </voice>
-        </speak>
-        """
+        # Create audio config with WAV format
+        audio_config = speechsdk.AudioConfig(filename=wav_path)
 
-        # Create speech synthesizer
-        audio_config = speechsdk.AudioConfig(filename=output_path)
-        speech_synthesizer = speechsdk.SpeechSynthesizer(
-            speech_config=self.speech_config, audio_config=audio_config
+        synthesizer = speechsdk.SpeechSynthesizer(
+            speech_config=speech_config, audio_config=audio_config
         )
 
         # Generate audio
-        result = speech_synthesizer.speak_ssml_async(ssml_text).get()
-        if result.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
-            return output_path
-        else:
-            raise Exception(f"Speech synthesis failed: {result.reason}")
+        result = synthesizer.speak_text(text)
 
-    async def _generate_audio_async(
-        self, segments: List[Tuple[str, str, int]]
-    ) -> List[str]:
-        """Generate audio files concurrently."""
-        loop = asyncio.get_event_loop()
-        tasks = []
-        for speaker, text, timestamp in segments:
-            output_path = f"{self.output_dir}/{speaker.lower()}_{timestamp}.mp3"
-            tasks.append(
-                loop.run_in_executor(
-                    None, self._generate_audio, text, speaker, output_path
-                )
-            )
-        return await asyncio.gather(*tasks)
+        if result.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
+            # Convert WAV to MP3 using pydub
+            if os.path.exists(wav_path):
+                audio = AudioSegment.from_wav(wav_path)
+                audio.export(output_path, format="mp3", bitrate="192k")
+                # Clean up WAV file
+                os.remove(wav_path)
+                return output_path
+        else:
+            print(f"Failed with reason: {result.reason}")
+            raise Exception(f"Speech synthesis failed with reason: {result.reason}")
+
+    def _generate_audio_batch(self, segments: List[Tuple[str, str, int]]) -> List[str]:
+        """Generate audio files sequentially."""
+        audio_files = []
+
+        for idx, (speaker, text, timestamp) in enumerate(segments):
+            # Clean the text
+            text = text.strip()
+            if not text:
+                print(f"Skipping empty text for {speaker}")
+                continue
+
+            # Use the unique timestamp in the filename
+            output_path = f"{self.output_dir}/{speaker.lower()}_{timestamp:013d}.mp3"
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+            try:
+                print(f"\nGenerating audio {idx + 1}/{len(segments)} for {speaker}:")
+                print(f"Text: {text[:100]}...")
+                result = self._generate_audio(text, speaker, output_path)
+                audio_files.append(result)
+                print(f"✓ Generated: {os.path.basename(output_path)}")
+            except Exception as e:
+                print(f"Failed to generate audio for {speaker}: {e}")
+                raise
+
+        return audio_files
 
     def _merge_audio_files(self, audio_files: List[str], output_file: str) -> str:
         """Merge audio files with crossfade."""
+        print(f"\nStarting merge of {len(audio_files)} files...")
+
+        if not audio_files:
+            raise Exception("No audio files to merge")
+
         merged = AudioSegment.empty()
         sorted_files = sorted(
-            audio_files, key=lambda x: int(re.search(r"(\d{10})", x).group(1))
+            audio_files, key=lambda x: int(re.search(r"_(\d{13})", x).group(1))
         )
 
-        for file in sorted_files:
-            audio = AudioSegment.from_mp3(file)
-            if len(merged) > 0:
-                merged = merged.append(audio, crossfade=50)
-            else:
-                merged = audio
+        print("\nProcessing files in order:")
+        for idx, file in enumerate(sorted_files):
+            print(f"Processing {idx + 1}/{len(sorted_files)}: {os.path.basename(file)}")
+            if not os.path.exists(file):
+                print(f"Warning: File does not exist: {file}")
+                continue
 
-        merged.export(output_file, format="mp3", bitrate="192k")
+            try:
+                audio = AudioSegment.from_mp3(file)
+                print(f"Loaded audio segment, duration: {len(audio)}ms")
+
+                if len(merged) > 0:
+                    # Add small pause between segments
+                    silence = AudioSegment.silent(duration=500)  # 500ms pause
+                    merged = merged + silence + audio
+                else:
+                    merged = audio
+            except Exception as e:
+                print(f"Error processing {file}: {e}")
+                raise
+
+        print(f"\nExporting final audio to: {output_file}")
+        os.makedirs(os.path.dirname(output_file), exist_ok=True)
+
+        merged.export(
+            output_file,
+            format="mp3",
+            bitrate="192k",
+            parameters=["-acodec", "libmp3lame", "-q:a", "2"],
+        )
+
+        if os.path.exists(output_file):
+            size_mb = os.path.getsize(output_file) / (1024 * 1024)
+            duration_sec = len(merged) / 1000
+            print(f"Successfully created merged file:")
+            print(f"- Path: {output_file}")
+            print(f"- Size: {size_mb:.2f}MB")
+            print(f"- Duration: {duration_sec:.1f} seconds")
+        else:
+            raise Exception(f"Failed to create merged file: {output_file}")
+
         return output_file
 
-    async def generate_podcast(self, script: str) -> str:
+    def generate_podcast(self, script: str) -> str:
         """Main method to generate podcast from script."""
-        # Create output directory
         timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
         self.output_dir = f"{self.base_dir}/podcast_{timestamp}"
         os.makedirs(self.output_dir, exist_ok=True)
 
-        # Parse script and generate segments
         segments = []
         matches = re.findall(
             r"(Host|Learner|Expert):\s*(.*?)(?=(Host|Learner|Expert|$))",
@@ -109,13 +159,18 @@ class PodcastGenerator:
             re.DOTALL,
         )
 
-        for speaker, text, _ in matches:
-            timestamp = int(datetime.datetime.now().timestamp())
-            segments.append((speaker, text.strip(), timestamp))
+        # Create segments with unique timestamps for each dialogue
+        for idx, (speaker, text, _) in enumerate(matches):
+            # Use combination of base timestamp and index for unique ordering
+            segment_timestamp = int(datetime.datetime.now().timestamp() * 1000) + idx
+            segments.append((speaker, text.strip(), segment_timestamp))
+            print(f"Added segment {idx + 1}: {speaker} - {text[:50]}...")
 
-        # Generate audio concurrently
-        audio_files = await self._generate_audio_async(segments)
+        print(f"\nFound {len(segments)} dialogue segments")
 
-        # Merge audio files
-        output_file = f"podcast_{int(datetime.datetime.now().timestamp())}.mp3"
+        audio_files = self._generate_audio_batch(segments)
+
+        output_file = (
+            f"{self.output_dir}/podcast_{int(datetime.datetime.now().timestamp())}.mp3"
+        )
         return self._merge_audio_files(audio_files, output_file)

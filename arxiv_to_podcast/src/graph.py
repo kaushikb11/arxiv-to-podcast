@@ -117,12 +117,13 @@ def generate_podcast(state: PodcastState) -> Dict[str, Any]:
         region=os.getenv("AZURE_SPEECH_REGION"),
         base_dir=paper_dir,
     )
-    audio_path = asyncio.run(generator.generate_podcast(state["enhanced_script"]))
+    audio_path = generator.generate_podcast(state["enhanced_script"])
     return {"audio_path": audio_path}
 
 
 def create_arxiv_to_podcast_agent(verbose: bool = True):
     graph = StateGraph(PodcastState)
+    total_sections = {"value": 0}
 
     def add_verbose_node(name, func):
         def verbose_wrapper(state):
@@ -132,15 +133,16 @@ def create_arxiv_to_podcast_agent(verbose: bool = True):
 
                 # Show relevant state based on node type
                 if name == "process_section":
-                    total_sections = len(state.get("section_plan", []))
+                    if total_sections["value"] == 0:
+                        total_sections["value"] = len(state["section_plan"])
+
                     remaining = len(state["section_plan"])
-                    completed = total_sections - remaining
-                    print(f"📊 Progress: Section {completed}/{total_sections}")
+                    completed = total_sections["value"] - remaining
+                    print(f"📊 Progress: Section {completed}/{total_sections['value']}")
                     if state["section_plan"]:
                         print(f"🎯 Current section: {state['section_plan'][0][:100]}...")
                 elif name == "process_arxiv_paper":
                     print(f"📄 Processing paper: {state['paper_url']}")
-                    # memory.vectorstore = initialize_vectorstore(state["paper_parsed_path"])
                 elif name == "generate_script_plan":
                     print("📝 Generating podcast structure...")
                 elif name == "generate_podcast":
@@ -162,7 +164,7 @@ def create_arxiv_to_podcast_agent(verbose: bool = True):
     add_verbose_node("generate_initial_dialogue", generate_initial_dialogue)
     add_verbose_node("process_section", process_section)
     add_verbose_node("enhance_script", enhance_script)
-    # add_verbose_node("generate_podcast", generate_podcast)
+    add_verbose_node("generate_podcast", generate_podcast)
 
     graph.add_edge("process_arxiv_paper", "generate_script_plan")
     graph.add_edge("process_arxiv_paper", "generate_initial_dialogue")
@@ -174,9 +176,9 @@ def create_arxiv_to_podcast_agent(verbose: bool = True):
         should_continue_sections,
         {"process_section": "process_section", "enhance_script": "enhance_script"},
     )
-    graph.add_edge("enhance_script", END)
+    graph.add_edge("enhance_script", "generate_podcast")
     graph.add_edge("generate_script_plan", END)
-    # graph.add_edge("generate_podcast", END)
+    graph.add_edge("generate_podcast", END)
 
     graph.set_entry_point("process_arxiv_paper")
 
